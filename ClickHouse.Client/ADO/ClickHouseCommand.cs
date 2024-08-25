@@ -23,7 +23,6 @@ public class ClickHouseCommand : DbCommand, IClickHouseCommand, IDisposable
 {
     private readonly CancellationTokenSource cts = new CancellationTokenSource();
     private readonly ClickHouseParameterCollection commandParameters = new ClickHouseParameterCollection();
-    private Dictionary<string, object> customSettings;
     private ClickHouseConnection connection;
 
     public ClickHouseCommand()
@@ -57,8 +56,7 @@ public class ClickHouseCommand : DbCommand, IClickHouseCommand, IDisposable
     /// <summary>
     /// Gets collection of custom settings which will be passed as URL query string parameters.
     /// </summary>
-    /// <remarks>Not thread-safe.</remarks>
-    public IDictionary<string, object> CustomSettings => customSettings ??= new Dictionary<string, object>();
+    public IDictionary<string, object> CustomSettings { get; } = new Dictionary<string, object>();
 
     protected override DbConnection DbConnection
     {
@@ -165,7 +163,7 @@ public class ClickHouseCommand : DbCommand, IClickHouseCommand, IDisposable
         await connection.EnsureOpenAsync().ConfigureAwait(false); // Preserve old behavior
 
         uriBuilder.QueryId = QueryId;
-        uriBuilder.CommandQueryStringParameters = customSettings;
+        uriBuilder.CommandQueryStringParameters = CustomSettings;
 
         using var postMessage = connection.UseFormDataParameters
             ? BuildHttpRequestMessageWithFormData(
