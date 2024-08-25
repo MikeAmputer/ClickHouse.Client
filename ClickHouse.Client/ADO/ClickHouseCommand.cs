@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
 using System.Linq;
@@ -51,6 +52,11 @@ public class ClickHouseCommand : DbCommand, IClickHouseCommand, IDisposable
     public string QueryId { get; set; }
 
     public QueryStats QueryStats { get; private set; }
+
+    /// <summary>
+    /// Gets collection of custom settings which will be passed as URL query string parameters.
+    /// </summary>
+    public IDictionary<string, object> CustomSettings { get; } = new Dictionary<string, object>();
 
     protected override DbConnection DbConnection
     {
@@ -156,8 +162,8 @@ public class ClickHouseCommand : DbCommand, IClickHouseCommand, IDisposable
         var uriBuilder = connection.CreateUriBuilder();
         await connection.EnsureOpenAsync().ConfigureAwait(false); // Preserve old behavior
 
-        if (!string.IsNullOrEmpty(QueryId))
-            uriBuilder.CustomParameters.Add("query_id", QueryId);
+        uriBuilder.QueryId = QueryId;
+        uriBuilder.CommandQueryStringParameters = CustomSettings;
 
         using var postMessage = connection.UseFormDataParameters
             ? BuildHttpRequestMessageWithFormData(
@@ -186,7 +192,9 @@ public class ClickHouseCommand : DbCommand, IClickHouseCommand, IDisposable
             sqlQuery = commandParameters.ReplacePlaceholders(sqlQuery);
             foreach (ClickHouseDbParameter parameter in commandParameters)
             {
-                uriBuilder.AddQueryParameter(parameter.ParameterName, HttpParameterFormatter.Format(parameter, connection.TypeSettings));
+                uriBuilder.AddSqlQueryParameter(
+                    parameter.ParameterName,
+                    HttpParameterFormatter.Format(parameter, connection.TypeSettings));
             }
         }
 
