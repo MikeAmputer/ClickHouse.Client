@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Numerics;
@@ -19,6 +19,7 @@ using ClickHouse.Client.Utility;
 
 namespace ClickHouse.Client.ADO.Readers;
 
+// TODO: implement IDbColumnSchemaGenerator
 public class ClickHouseDataReader : DbDataReader, IEnumerator<IDataReader>, IEnumerable<IDataReader>, IDataRecord
 {
     private const int BufferSize = 512 * 1024;
@@ -136,7 +137,7 @@ public class ClickHouseDataReader : DbDataReader, IEnumerator<IDataReader>, IEnu
         return index;
     }
 
-    public override string GetString(int ordinal) => (string)GetValue(ordinal);
+    public override string GetString(int ordinal) => GetValue(ordinal)?.ToString();
 
     public override object GetValue(int ordinal) => CurrentRow[ordinal];
 

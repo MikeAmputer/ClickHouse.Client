@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Data.Common;
-using System.Runtime.Serialization;
 
 namespace ClickHouse.Client;
 
@@ -18,11 +17,6 @@ public class ClickHouseServerException : DbException
         : base(error, errorCode)
     {
         Query = query;
-    }
-
-    protected ClickHouseServerException(SerializationInfo info, StreamingContext context)
-        : base(info, context)
-    {
     }
 
     public string Query { get; }

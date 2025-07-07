@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Text;
 using ClickHouse.Client.ADO;
 using NUnit.Framework;
 
@@ -17,5 +18,18 @@ public class AbstractConnectionTestFixture : IDisposable
         command.ExecuteScalar();
     }
 
+    protected static string SanitizeTableName(string input)
+    {
+        var builder = new StringBuilder();
+        foreach (var c in input)
+        {
+            if (char.IsLetterOrDigit(c) || c == '_')
+                builder.Append(c);
+        }
+
+        return builder.ToString();
+    }
+
+    [OneTimeTearDown]
     public void Dispose() => connection?.Dispose();
 }

@@ -7,8 +7,9 @@ using ClickHouse.Client.ADO;
 using ClickHouse.Client.Copy;
 using ClickHouse.Client.Utility;
 
-namespace ClickHouse.Client.Benchmark.Benchmarks;
+namespace ClickHouse.Client.Benchmark;
 
+[MemoryDiagnoser(true)]
 public class BulkInsertColumn
 {
     private readonly ClickHouseConnection connection;

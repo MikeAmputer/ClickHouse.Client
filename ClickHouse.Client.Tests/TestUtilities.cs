@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 using ClickHouse.Client.ADO;
 using ClickHouse.Client.Numerics;
 using ClickHouse.Client.Utility;
-using NUnit.Framework;
+using System.Text.Json.Nodes;
 
 namespace ClickHouse.Client.Tests;
 
@@ -37,7 +37,7 @@ public static class TestUtilities
     {
         using var connection = GetTestClickHouseConnection();
         await connection.OpenAsync();
-        Assert.AreEqual(SupportedFeatures & connection.SupportedFeatures, connection.SupportedFeatures);
+        Assert.That(connection.SupportedFeatures, Is.EqualTo(SupportedFeatures & connection.SupportedFeatures));
     }
 
     /// <summary>
@@ -62,7 +62,17 @@ public static class TestUtilities
         {
             builder["set_allow_experimental_variant_type"] = 1;
         }
-        return new ClickHouseConnection(builder.ConnectionString);
+        if (SupportedFeatures.HasFlag(Feature.Json))
+        {
+            builder["set_allow_experimental_json_type"] = 1;
+        }
+        if (SupportedFeatures.HasFlag(Feature.Dynamic))
+        {
+            builder["set_allow_experimental_dynamic_type"] = 1;
+        }
+        var connection = new ClickHouseConnection(builder.ConnectionString);
+        connection.Open();
+        return connection;
     }
 
     public static ClickHouseConnectionStringBuilder GetConnectionStringBuilder()
@@ -100,12 +110,24 @@ public static class TestUtilities
 
         yield return new DataTypeSample("Float32", typeof(float), "toFloat32(32e6)", 32e6);
         yield return new DataTypeSample("Float32", typeof(float), "toFloat32(-32e6)", -32e6);
+        
+        yield return new DataTypeSample("Float32", typeof(float), "toFloat32(1.1)", 1.1f);
+        yield return new DataTypeSample("Float32", typeof(float), "toFloat32(-1.1)", -1.1f);
 
         yield return new DataTypeSample("Float64", typeof(double), "toFloat64(64e6)", 64e6);
         yield return new DataTypeSample("Float64", typeof(double), "toFloat64(-64e6)", -64e6);
 
         yield return new DataTypeSample("String", typeof(string), "'TestString'", "TestString");
         yield return new DataTypeSample("String", typeof(string), "'\t\r\n'", "\t\r\n");
+
+        yield return new DataTypeSample("String", typeof(string), "'Добрый день'", "Добрый день");
+        yield return new DataTypeSample("String", typeof(string), "'¿Qué tal?'", "¿Qué tal?");
+        yield return new DataTypeSample("String", typeof(string), "'你好'", "你好");
+        yield return new DataTypeSample("String", typeof(string), "'こんにちは'", "こんにちは");
+        yield return new DataTypeSample("String", typeof(string), "'⌬⏣'", "⌬⏣");
+        yield return new DataTypeSample("String", typeof(string), "'Çay'", "Çay");
+        yield return new DataTypeSample("String", typeof(string), "'お茶'", "お茶");
+
         // yield return new DataTypeSample("String", typeof(string), "'1\t2\n3'", "1\t2\n3");
         yield return new DataTypeSample("FixedString(3)", typeof(string), "toFixedString('ASD',3)", "ASD");
         yield return new DataTypeSample("FixedString(5)", typeof(string), "toFixedString('ASD',5)", "ASD\0\0");
@@ -221,16 +243,35 @@ public static class TestUtilities
         {
             yield return new DataTypeSample("Variant(UInt64, String, Array(UInt64))", typeof(string), "'Hello, World!'::Variant(UInt64, String, Array(UInt64))", "Hello, World!");
         }
+
+        if (SupportedFeatures.HasFlag(Feature.Json))
+        {
+            // TODO: properly test nulls as ClickHouse eats them
+            var jsonExamples = new[]
+            {
+                "{}",
+                //"{\"val\": null}",
+                "{\"val\": \"string\"}",
+                "{\"val\": 1}",
+                "{\"val\": 1.5}",
+                "{\"val\": [1,2]}",
+                "{ \"nested\": { \"double\": 1.25, \"int\": 123456, \"string\": \"stringValue\" } }",
+                "{ \"nestedArray\": [{\"val\": 1}, {\"val\": 2}] }",
+            };
+
+            foreach (var example in jsonExamples)
+                yield return new DataTypeSample("Json", typeof(string), $"'{example}'::Json", (JsonObject)JsonNode.Parse(example));
+        }
     }
 
     public static object[] GetEnsureSingleRow(this DbDataReader reader)
     {
-        Assert.IsTrue(reader.HasRows, "Reader expected to have rows");
-        Assert.IsTrue(reader.Read(), "Failed to read first row");
+        ClassicAssert.IsTrue(reader.HasRows, "Reader expected to have rows");
+        ClassicAssert.IsTrue(reader.Read(), "Failed to read first row");
 
         var data = reader.GetFieldValues();
 
-        Assert.IsFalse(reader.Read(), "Unexpected extra row: " + string.Join(",", reader.GetFieldValues()));
+        ClassicAssert.IsFalse(reader.Read(), "Unexpected extra row: " + string.Join(",", reader.GetFieldValues()));
 
         return data;
     }
@@ -241,5 +282,5 @@ public static class TestUtilities
 
     public static object[] GetFieldValues(this DbDataReader reader) => Enumerable.Range(0, reader.FieldCount).Select(reader.GetValue).ToArray();
 
-    public static void AssertHasFieldCount(this DbDataReader reader, int expectedCount) => Assert.AreEqual(expectedCount, reader.FieldCount);
+    public static void AssertHasFieldCount(this DbDataReader reader, int expectedCount) => Assert.That(reader.FieldCount, Is.EqualTo(expectedCount));
 }

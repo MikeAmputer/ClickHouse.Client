@@ -9,7 +9,6 @@ using NUnit.Framework;
 
 namespace ClickHouse.Client.Tests.Numerics;
 
-[Parallelizable]
 public class ClickHouseOldDecimalSqlTests
 {
     private readonly ClickHouseConnection connection;
@@ -48,14 +47,19 @@ public class ClickHouseOldDecimalSqlTests
     }
 
     [Test]
-    [Parallelizable]
     [TestCaseSource(typeof(ClickHouseOldDecimalSqlTests), nameof(DecimalTestCases))]
     public async Task Select(decimal expected, string sql)
     {
         using var reader = await connection.ExecuteReaderAsync(sql);
         reader.AssertHasFieldCount(1);
         var result = reader.GetEnsureSingleRow().Single();
-        Assert.IsInstanceOf<decimal>(result);
-        Assert.AreEqual(expected, result);
+        ClassicAssert.IsInstanceOf<decimal>(result);
+        Assert.That(result, Is.EqualTo(expected));
+    }
+
+    [OneTimeTearDown]
+    public void Dispose()
+    {
+        connection?.Dispose();
     }
 }

@@ -9,7 +9,6 @@ using ClickHouse.Client.Tests.Attributes;
 using ClickHouse.Client.Utility;
 using NUnit.Framework;
 
-[Parallelizable]
 [TestFixture(true)]
 [TestFixture(false)]
 public class SqlParameterizedSelectWithFormDataTests
@@ -31,7 +30,6 @@ public class SqlParameterizedSelectWithFormDataTests
         .Select(sample => new TestCaseData(sample.ExampleExpression, sample.ClickHouseType, sample.ExampleValue));
 
     [Test]
-    [Parallelizable]
     [RequiredFeature(Feature.ParamsInMultipartFormData)]
     [TestCaseSource(typeof(SqlParameterizedSelectTests), nameof(TypedQueryParameters))]
     public async Task ShouldExecuteParameterizedCompareWithTypeDetection(string exampleExpression, string clickHouseType, object value)
@@ -51,13 +49,18 @@ public class SqlParameterizedSelectWithFormDataTests
         command.AddParameter("var", value);
 
         var result = (await command.ExecuteReaderAsync()).GetEnsureSingleRow();
-        Assert.AreEqual(result[0], result[1]);
+        Assert.That(result[1], Is.EqualTo(result[0]).UsingPropertiesComparer());
 
         if (value is null || value is DBNull)
         {
-            Assert.IsInstanceOf<DBNull>(result[2]);
+            ClassicAssert.IsInstanceOf<DBNull>(result[2]);
         }
     }
 
-    public void Dispose() => connection?.Dispose();
+
+    [OneTimeTearDown]
+    public void Dispose()
+    {
+        connection?.Dispose();
+    }
 }

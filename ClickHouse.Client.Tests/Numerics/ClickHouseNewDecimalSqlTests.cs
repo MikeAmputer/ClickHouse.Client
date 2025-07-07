@@ -9,7 +9,7 @@ using NUnit.Framework;
 
 namespace ClickHouse.Client.Tests.Numerics;
 
-[Parallelizable]
+[Category("ClickHouseDecimal")]
 public class ClickHouseNewDecimalSqlTests
 {
     private readonly ClickHouseConnection connection;
@@ -49,39 +49,42 @@ public class ClickHouseNewDecimalSqlTests
 
     [Test]
     [TestCaseSource(typeof(ClickHouseNewDecimalSqlTests), nameof(DecimalTypes))]
-    [Parallelizable]
     public async Task SelectMaxValue(string typeName)
     {
         var type = (DecimalType)TypeConverter.ParseClickHouseType(typeName, TypeSettings.Default);
         using var reader = await connection.ExecuteReaderAsync($"SELECT CAST('{type.MaxValue}', '{type}')");
         reader.AssertHasFieldCount(1);
         var result = reader.GetEnsureSingleRow().Single();
-        Assert.IsInstanceOf<ClickHouseDecimal>(result);
-        Assert.AreEqual(type.MaxValue, result);
+        ClassicAssert.IsInstanceOf<ClickHouseDecimal>(result);
+        Assert.That(result, Is.EqualTo(type.MaxValue));
     }
 
     [Test]
     [TestCaseSource(typeof(ClickHouseNewDecimalSqlTests), nameof(DecimalTypes))]
-    [Parallelizable]
     public async Task SelectMinValue(string typeName)
     {
         var type = (DecimalType)TypeConverter.ParseClickHouseType(typeName, TypeSettings.Default);
         using var reader = await connection.ExecuteReaderAsync($"SELECT CAST('{type.MinValue}', '{type}')");
         reader.AssertHasFieldCount(1);
         var result = reader.GetEnsureSingleRow().Single();
-        Assert.IsInstanceOf<ClickHouseDecimal>(result);
-        Assert.AreEqual(type.MinValue, result);
+        ClassicAssert.IsInstanceOf<ClickHouseDecimal>(result);
+        Assert.That(result, Is.EqualTo(type.MinValue));
     }
 
     [Test]
-    [Parallelizable]
     [TestCaseSource(typeof(ClickHouseNewDecimalSqlTests), nameof(DecimalTestCases))]
     public async Task Select(ClickHouseDecimal expected, string sql)
     {
         using var reader = await connection.ExecuteReaderAsync(sql);
         reader.AssertHasFieldCount(1);
         var result = reader.GetEnsureSingleRow().Single();
-        Assert.IsInstanceOf<ClickHouseDecimal>(result);
-        Assert.AreEqual(expected, result);
+        ClassicAssert.IsInstanceOf<ClickHouseDecimal>(result);
+        Assert.That(result, Is.EqualTo(expected));
+    }
+
+    [OneTimeTearDown]
+    public void Dispose()
+    {
+        connection?.Dispose();
     }
 }

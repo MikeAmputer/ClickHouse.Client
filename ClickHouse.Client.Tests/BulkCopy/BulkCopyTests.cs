@@ -1,19 +1,21 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Text;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using ClickHouse.Client.ADO;
 using ClickHouse.Client.Copy;
+using ClickHouse.Client.Copy.Serializer;
 using ClickHouse.Client.Tests.Attributes;
 using ClickHouse.Client.Utility;
 using NUnit.Framework;
 using NUnit.Framework.Internal;
 
-namespace ClickHouse.Client.Tests;
+namespace ClickHouse.Client.Tests.BulkCopy;
 
 public class BulkCopyTests : AbstractConnectionTestFixture
 {
@@ -30,7 +32,6 @@ public class BulkCopyTests : AbstractConnectionTestFixture
     }
 
     [Test]
-    [Parallelizable]
     [TestCaseSource(typeof(BulkCopyTests), nameof(GetInsertSingleValueTestCases))]
     public async Task ShouldExecuteSingleValueInsertViaBulkCopy(string clickHouseType, object insertedValue)
     {
@@ -39,6 +40,8 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await connection.ExecuteStatementAsync($"TRUNCATE TABLE IF EXISTS {targetTable}");
         await connection.ExecuteStatementAsync($"CREATE TABLE IF NOT EXISTS {targetTable} (value {clickHouseType}) ENGINE Memory");
 
+        var batchSentInvocationCount = 0L;
+
         using var bulkCopy = new ClickHouseBulkCopy(connection)
         {
             DestinationTableName = targetTable,
@@ -46,22 +49,24 @@ public class BulkCopyTests : AbstractConnectionTestFixture
             BatchSize = 100
         };
 
+        bulkCopy.BatchSent += (sender, e) => Interlocked.Add(ref batchSentInvocationCount, e.RowsWritten);
+
         await bulkCopy.InitAsync();
         await bulkCopy.WriteToServerAsync(Enumerable.Repeat(new[] { insertedValue }, 1));
 
-        Assert.AreEqual(1, bulkCopy.RowsWritten);
+        Assert.That(batchSentInvocationCount, Is.EqualTo(1));
+        Assert.That(bulkCopy.RowsWritten, Is.EqualTo(1));
 
         using var reader = await connection.ExecuteReaderAsync($"SELECT * from {targetTable}");
-        Assert.IsTrue(reader.Read(), "Cannot read inserted data");
+        ClassicAssert.IsTrue(reader.Read(), "Cannot read inserted data");
         reader.AssertHasFieldCount(1);
         var data = reader.GetValue(0);
-        Assert.AreEqual(insertedValue, data, "Original and actually inserted values differ");
+        Assert.That(data, Is.EqualTo(insertedValue).Using<JsonObject>(new JsonNodeEqualityComparer()), "Original and actually inserted values differ");
     }
 
 
 #if NET6_0_OR_GREATER
     [Test]
-    [Parallelizable]
     [RequiredFeature(Feature.Date32)]
     public async Task ShouldInsertDateOnly()
     {
@@ -80,13 +85,13 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await bulkCopy.InitAsync();
         await bulkCopy.WriteToServerAsync(Enumerable.Repeat(new object[] { new DateOnly(1999, 12, 31) }, 1));
 
-        Assert.AreEqual(1, bulkCopy.RowsWritten);
+        Assert.That(bulkCopy.RowsWritten, Is.EqualTo(1));
 
         using var reader = await connection.ExecuteReaderAsync($"SELECT * from {targetTable}");
-        Assert.IsTrue(reader.Read(), "Cannot read inserted data");
+        ClassicAssert.IsTrue(reader.Read(), "Cannot read inserted data");
         reader.AssertHasFieldCount(1);
         var data = reader.GetValue(0);
-        Assert.AreEqual(new DateTime(1999, 12, 31), data, "Original and actually inserted values differ");
+        Assert.That(data, Is.EqualTo(new DateTime(1999, 12, 31)), "Original and actually inserted values differ");
     }
 #endif
 
@@ -218,7 +223,7 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await bulkCopy.InitAsync();
         await bulkCopy.WriteToServerAsync(Enumerable.Repeat(new[] { (object)1 }, 1), CancellationToken.None);
 
-        Assert.AreEqual(1, bulkCopy.RowsWritten);
+        Assert.That(bulkCopy.RowsWritten, Is.EqualTo(1));
     }
 
     [Test]
@@ -263,9 +268,8 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         }
         catch (ClickHouseBulkCopySerializationException ex)
         {
-            CollectionAssert.AreEqual(new object[] { 256 }, ex.Row);
-            Assert.AreEqual(0, ex.Index);
-            Assert.IsInstanceOf<OverflowException>(ex.InnerException);
+            Assert.That(ex.Row, Is.EqualTo(new object[] { 256 }).AsCollection);
+            ClassicAssert.IsInstanceOf<OverflowException>(ex.InnerException);
         }
     }
 
@@ -287,9 +291,12 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await bulkCopy.InitAsync();
         await bulkCopy.WriteToServerAsync(Enumerable.Repeat(new[] { (object)1 }, 1), CancellationToken.None);
 
-        Assert.AreEqual(1, bulkCopy.RowsWritten);
-        // Verify we can read back
-        Assert.AreEqual(1, await connection.ExecuteScalarAsync($"SELECT value FROM {targetTable}"));
+        Assert.Multiple(async () =>
+        {
+            Assert.That(bulkCopy.RowsWritten, Is.EqualTo(1));
+            // Verify we can read back
+            Assert.That(await connection.ExecuteScalarAsync($"SELECT value FROM {targetTable}"), Is.EqualTo(1));
+        });
     }
 
 
@@ -314,8 +321,11 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await bulkCopy.InitAsync();
         await bulkCopy.WriteToServerAsync(data, CancellationToken.None);
 
-        Assert.AreEqual(Count, bulkCopy.RowsWritten);
-        Assert.AreEqual(Count, await connection.ExecuteScalarAsync($"SELECT count() FROM {targetTable}"));
+        Assert.Multiple(async () =>
+        {
+            Assert.That(bulkCopy.RowsWritten, Is.EqualTo(Count));
+            Assert.That(await connection.ExecuteScalarAsync($"SELECT count() FROM {targetTable}"), Is.EqualTo(Count));
+        });
     }
 
     [Test]
@@ -341,6 +351,7 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         using var reader = await connection.ExecuteReaderAsync($"SELECT * from {targetTable}");
     }
 
+#if NET48 || NET5_0_OR_GREATER
     [Test]
     public async Task ShouldInsertNestedTable()
     {
@@ -359,9 +370,13 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await bulkCopy.WriteToServerAsync(new List<object[]>() { new object[] { Guid.NewGuid(), new ITuple[] { ("1", "Comment1"), ("2", "Comment2"), ("3", "Comment3") } } });
 
         using var reader = await connection.ExecuteReaderAsync($"SELECT * from {targetTable}");
-        Assert.AreEqual(1, bulkCopy.RowsWritten);
-        Assert.AreEqual(1, await connection.ExecuteScalarAsync($"SELECT count() FROM {targetTable}"));
+        Assert.Multiple(async () =>
+        {
+            Assert.That(bulkCopy.RowsWritten, Is.EqualTo(1));
+            Assert.That(await connection.ExecuteScalarAsync($"SELECT count() FROM {targetTable}"), Is.EqualTo(1));
+        });
     }
+#endif
 
     [Test]
     public async Task ShouldInsertDoubleNestedTable()
@@ -394,8 +409,11 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         await bulkCopy.WriteToServerAsync([[1, threads]]);
 
         using var reader = await connection.ExecuteReaderAsync($"SELECT * from {targetTable}");
-        Assert.AreEqual(1, bulkCopy.RowsWritten);
-        Assert.AreEqual(1, await connection.ExecuteScalarAsync($"SELECT count() FROM {targetTable}"));
+        Assert.Multiple(async () =>
+        {
+            Assert.That(bulkCopy.RowsWritten, Is.EqualTo(1));
+            Assert.That(await connection.ExecuteScalarAsync($"SELECT count() FROM {targetTable}"), Is.EqualTo(1));
+        });
     }
 
     [Test]
@@ -430,15 +448,53 @@ public class BulkCopyTests : AbstractConnectionTestFixture
         Assert.ThrowsAsync<ClickHouseBulkCopySerializationException>(async () => await bulkCopy.WriteToServerAsync(data, CancellationToken.None));
     }
 
-    private static string SanitizeTableName(string input)
+    [Test]
+    public async Task ShouldNotAffectSharedArrayPool()
     {
-        var builder = new StringBuilder();
-        foreach (var c in input)
+        var targetTable = "test." + SanitizeTableName($"array_pool");
+
+        await connection.ExecuteStatementAsync($"DROP TABLE IF EXISTS {targetTable}");
+        await connection.ExecuteStatementAsync($"CREATE TABLE IF NOT EXISTS {targetTable} (int Int32, str String, dt DateTime) ENGINE Null");
+
+        const int poolSize = 8;
+        using var bulkCopy = new ClickHouseBulkCopy(connection)
         {
-            if (char.IsLetterOrDigit(c) || c == '_')
-                builder.Append(c);
+            DestinationTableName = targetTable,
+            BatchSize = poolSize
+        };
+
+        await bulkCopy.InitAsync();
+        await bulkCopy.WriteToServerAsync(Enumerable.Repeat(new object[] { 0, "a", DateTime.Now }, 100));
+
+        var rentedArray = ArrayPool<object>.Shared.Rent(poolSize);
+        Assert.DoesNotThrow(() => { rentedArray[0] = 1; });
+        ArrayPool<object>.Shared.Return(rentedArray);
+    }
+
+    [Test]
+    [RequiredFeature(Feature.Json)]
+    public async Task ShouldInsertJson()
+    {
+        var targetTable = "test." + SanitizeTableName($"bulk_json");
+        await connection.ExecuteStatementAsync($"DROP TABLE IF EXISTS {targetTable}");
+        await connection.ExecuteStatementAsync($"CREATE TABLE IF NOT EXISTS {targetTable} (value JSON) ENGINE Memory");
+
+        using var bulkCopy = new ClickHouseBulkCopy(connection)
+        {
+            DestinationTableName = targetTable,
+        };
+
+        var jsonString = "{\"bool\": true}";
+        var jsonObject = (JsonObject)JsonNode.Parse(jsonString);
+
+        await bulkCopy.InitAsync();
+        await bulkCopy.WriteToServerAsync([[jsonString], [jsonObject]]);
+
+        using var reader = await connection.ExecuteReaderAsync($"SELECT * from {targetTable}");
+        while(reader.Read())
+        {
+            Assert.That(reader.GetValue(0), Is.EqualTo(jsonObject).UsingPropertiesComparer());
         }
-        return builder.ToString();
     }
 }
 

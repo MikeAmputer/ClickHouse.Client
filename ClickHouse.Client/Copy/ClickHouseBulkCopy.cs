@@ -1,40 +1,63 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using ClickHouse.Client.ADO;
 using ClickHouse.Client.ADO.Readers;
-using ClickHouse.Client.Formats;
+using ClickHouse.Client.Copy.Serializer;
 using ClickHouse.Client.Types;
 using ClickHouse.Client.Utility;
+using Microsoft.IO;
 
 namespace ClickHouse.Client.Copy;
 
 public class ClickHouseBulkCopy : IDisposable
 {
+    private static readonly RecyclableMemoryStreamManager CommonMemoryStreamManager = new(new RecyclableMemoryStreamManager.Options
+    {
+        MaximumLargePoolFreeBytes = 512 * 1024 * 1024,
+        MaximumSmallPoolFreeBytes = 128 * 1024 * 1024,
+        BlockSize = 256 * 1024,
+    });
+
     private readonly ClickHouseConnection connection;
+    private readonly BatchSerializer batchSerializer;
+    private readonly RowBinaryFormat rowBinaryFormat;
     private readonly bool ownsConnection;
+    private readonly RecyclableMemoryStreamManager memoryStreamManager;
     private long rowsWritten;
     private (string[] names, ClickHouseType[] types) columnNamesAndTypes;
 
     public ClickHouseBulkCopy(ClickHouseConnection connection)
-    {
-        this.connection = connection ?? throw new ArgumentNullException(nameof(connection));
-    }
+        : this(connection, RowBinaryFormat.RowBinary) { }
 
     public ClickHouseBulkCopy(string connectionString)
+        : this(connectionString, RowBinaryFormat.RowBinary) { }
+
+    public ClickHouseBulkCopy(ClickHouseConnection connection, RowBinaryFormat rowBinaryFormat)
     {
-        if (string.IsNullOrWhiteSpace(connectionString))
-            throw new ArgumentNullException(nameof(connectionString));
-        connection = new ClickHouseConnection(connectionString);
+        this.connection = connection ?? throw new ArgumentNullException(nameof(connection));
+        this.rowBinaryFormat = rowBinaryFormat;
+        batchSerializer = BatchSerializer.GetByRowBinaryFormat(rowBinaryFormat);
+    }
+
+    public ClickHouseBulkCopy(string connectionString, RowBinaryFormat rowBinaryFormat)
+        : this(
+            string.IsNullOrWhiteSpace(connectionString)
+                ? throw new ArgumentNullException(nameof(connectionString))
+                : new ClickHouseConnection(connectionString),
+            rowBinaryFormat)
+    {
         ownsConnection = true;
     }
+
+    /// <summary>
+    /// Bulk insert progress event.
+    /// </summary>
+    public event EventHandler<BatchSentEventArgs> BatchSent;
 
     /// <summary>
     /// Gets or sets size of batch in rows.
@@ -47,7 +70,7 @@ public class ClickHouseBulkCopy : IDisposable
     public int MaxDegreeOfParallelism { get; set; } = 4;
 
     /// <summary>
-    /// Gets name of destination table to insert to
+    /// Gets name of destination table to insert to.
     /// </summary>
     public string DestinationTableName { get; init; }
 
@@ -56,12 +79,26 @@ public class ClickHouseBulkCopy : IDisposable
     /// </summary>
     public IReadOnlyCollection<string> ColumnNames { get; init; }
 
-    private async Task<(string[] names, ClickHouseType[] types)> LoadNamesAndTypesAsync(string destinationTableName, IReadOnlyCollection<string> columns = null)
+    public sealed class BatchSentEventArgs : EventArgs
     {
-        using var reader = (ClickHouseDataReader)await connection.ExecuteReaderAsync($"SELECT {GetColumnsExpression(columns)} FROM {DestinationTableName} WHERE 1=0").ConfigureAwait(false);
-        var types = reader.GetClickHouseColumnTypes();
-        var names = reader.GetColumnNames().Select(c => c.EncloseColumnName()).ToArray();
-        return (names, types);
+        internal BatchSentEventArgs(long rowsWritten)
+        {
+            RowsWritten = rowsWritten;
+        }
+
+        public long RowsWritten
+        {
+            get;
+        }
+    }
+
+    /// <summary>
+    /// Gets RecyclableMemoryStreamManager used to create recyclable streams.
+    /// </summary>
+    public RecyclableMemoryStreamManager MemoryStreamManager
+    {
+        get { return memoryStreamManager ?? CommonMemoryStreamManager; }
+        init { memoryStreamManager = value; }
     }
 
     /// <summary>
@@ -114,7 +151,7 @@ public class ClickHouseBulkCopy : IDisposable
         if (columnNames == null || columnTypes == null)
             throw new InvalidOperationException("Column names not initialized. Call InitAsync once to load column data");
 
-        var query = $"INSERT INTO {DestinationTableName} ({string.Join(", ", columnNames)}) FORMAT RowBinary";
+        var query = $"INSERT INTO {DestinationTableName} ({string.Join(", ", columnNames)}) FORMAT {rowBinaryFormat.ToString()}";
 
         var tasks = new Task[MaxDegreeOfParallelism];
         for (var i = 0; i < tasks.Length; i++)
@@ -143,56 +180,29 @@ public class ClickHouseBulkCopy : IDisposable
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    private Stream SerializeBatch(Batch batch)
+    private async Task<(string[] names, ClickHouseType[] types)> LoadNamesAndTypesAsync(string destinationTableName, IReadOnlyCollection<string> columns = null)
     {
-        var stream = new MemoryStream() { Capacity = 8 * 1024 };
-
-        using (var gzipStream = new BufferedStream(new GZipStream(stream, CompressionLevel.Fastest, true), 256 * 1024))
-        {
-            using (var textWriter = new StreamWriter(gzipStream, Encoding.UTF8, 4 * 1024, true))
-            {
-                textWriter.WriteLine(batch.Query);
-            }
-
-            using var writer = new ExtendedBinaryWriter(gzipStream);
-
-            int col = 0;
-            object[] row = null;
-            int counter = 0;
-            var enumerator = batch.Rows.GetEnumerator();
-            try
-            {
-                while (enumerator.MoveNext())
-                {
-                    row = (object[])enumerator.Current;
-                    for (col = 0; col < row.Length; col++)
-                    {
-                        batch.Types[col].Write(writer, row[col]);
-                    }
-                    counter++;
-                    if (counter >= batch.Size)
-                        break; // We've reached the batch size
-                }
-            }
-            catch (Exception e)
-            {
-                throw new ClickHouseBulkCopySerializationException(row, col, e);
-            }
-        }
-        stream.Seek(0, SeekOrigin.Begin);
-        return stream;
+        using var reader = (ClickHouseDataReader)await connection.ExecuteReaderAsync($"SELECT {GetColumnsExpression(columns)} FROM {DestinationTableName} WHERE 1=0").ConfigureAwait(false);
+        var types = reader.GetClickHouseColumnTypes();
+        var names = reader.GetColumnNames().Select(c => c.EncloseColumnName()).ToArray();
+        return (names, types);
     }
 
     private async Task SendBatchAsync(Batch batch, CancellationToken token)
     {
         using (batch) // Dispose object regardless whether sending succeeds
         {
+            using var stream = MemoryStreamManager.GetStream(nameof(SendBatchAsync), 128 * 1024);
             // Async serialization
-            using var stream = await Task.Run(() => SerializeBatch(batch)).ConfigureAwait(false);
+            await Task.Run(() => batchSerializer.Serialize(batch, stream), token).ConfigureAwait(false);
+            // Seek to beginning as after writing it's at end
+            stream.Seek(0, SeekOrigin.Begin);
             // Async sending
             await connection.PostStreamAsync(null, stream, true, token).ConfigureAwait(false);
             // Increase counter
-            Interlocked.Add(ref rowsWritten, batch.Size);
+            var batchRowsWritten = Interlocked.Add(ref rowsWritten, batch.Size);
+            // Raise BatchSent event
+            BatchSent?.Invoke(this, new BatchSentEventArgs(batchRowsWritten));
         }
     }
 
@@ -212,24 +222,6 @@ public class ClickHouseBulkCopy : IDisposable
         foreach (var (batch, size) in rows.BatchRented(BatchSize))
         {
             yield return new Batch { Rows = batch, Size = size, Query = query, Types = types };
-        }
-    }
-
-    // Convenience argument collection
-    private struct Batch : IDisposable
-    {
-        public object[] Rows;
-        public int Size;
-        public string Query;
-        public ClickHouseType[] Types;
-
-        public void Dispose()
-        {
-            if (Rows != null)
-            {
-                ArrayPool<object>.Shared.Return(Rows);
-                Rows = null;
-            }
         }
     }
 }

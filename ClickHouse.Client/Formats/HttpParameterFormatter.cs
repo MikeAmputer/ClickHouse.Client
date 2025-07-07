@@ -3,6 +3,7 @@ using System.Collections;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using ClickHouse.Client.ADO.Parameters;
 using ClickHouse.Client.Numerics;
 using ClickHouse.Client.Types;
@@ -94,8 +95,14 @@ internal static class HttpParameterFormatter
                 return $"{{{string.Join(",", strings)}}}";
 
             case VariantType variantType:
-                var (_,chType) = variantType.GetMatchingType(value);
+                var (_, chType) = variantType.GetMatchingType(value);
                 return Format(chType, value, quote);
+
+            case JsonType jsonType:
+                if (value is string jsonString)
+                    return jsonString;
+                else
+                    return JsonSerializer.Serialize(value);
 
             default:
                 throw new ArgumentException($"Cannot convert {value} to {type}");

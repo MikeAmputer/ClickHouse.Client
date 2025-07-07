@@ -17,19 +17,19 @@ public class ClickHouseConnectionStringBuilder : DbConnectionStringBuilder
 
     public string Database
     {
-        get => GetStringOrDefault("Database", "default");
+        get => GetStringOrDefault("Database", ClickHouseEnvironment.Database);
         set => this["Database"] = value;
     }
 
     public string Username
     {
-        get => GetStringOrDefault("Username", "default");
+        get => GetStringOrDefault("Username", ClickHouseEnvironment.Username);
         set => this["Username"] = value;
     }
 
     public string Password
     {
-        get => GetStringOrDefault("Password", string.Empty);
+        get => GetStringOrDefault("Password", ClickHouseEnvironment.Password);
         set => this["Password"] = value;
     }
 
@@ -43,6 +43,12 @@ public class ClickHouseConnectionStringBuilder : DbConnectionStringBuilder
     {
         get => GetStringOrDefault("Host", "localhost");
         set => this["Host"] = value;
+    }
+
+    public string Path
+    {
+        get => GetStringOrDefault("Path", null);
+        set => this["Path"] = value;
     }
 
     public bool Compression

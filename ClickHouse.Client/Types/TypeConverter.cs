@@ -2,8 +2,11 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
+using ClickHouse.Client.Formats;
 using ClickHouse.Client.Numerics;
 using ClickHouse.Client.Types.Grammar;
+using NodaTime;
 
 [assembly: InternalsVisibleTo("ClickHouse.Client.Tests")] // assembly-level tag to expose below classes to tests
 
@@ -11,11 +14,11 @@ namespace ClickHouse.Client.Types;
 
 internal static class TypeConverter
 {
-    private static readonly IDictionary<string, ClickHouseType> SimpleTypes = new Dictionary<string, ClickHouseType>();
-    private static readonly IDictionary<string, ParameterizedType> ParameterizedTypes = new Dictionary<string, ParameterizedType>();
-    private static readonly IDictionary<Type, ClickHouseType> ReverseMapping = new Dictionary<Type, ClickHouseType>();
+    private static readonly Dictionary<string, ClickHouseType> SimpleTypes = [];
+    private static readonly Dictionary<string, ParameterizedType> ParameterizedTypes = [];
+    private static readonly Dictionary<Type, ClickHouseType> ReverseMapping = [];
 
-    private static readonly IDictionary<string, string> Aliases = new Dictionary<string, string>()
+    private static readonly Dictionary<string, string> Aliases = new()
     {
         { "BIGINT", "Int64" },
         { "BIGINT SIGNED", "Int64" },
@@ -98,6 +101,8 @@ internal static class TypeConverter
         .OrderBy(x => x)
         .ToArray();
 
+    internal static readonly string[] Separator = [" "];
+
     static TypeConverter()
     {
         RegisterPlainType<BooleanType>();
@@ -122,6 +127,7 @@ internal static class TypeConverter
         RegisterPlainType<Float64Type>();
 
         // Special types
+        RegisterPlainType<DynamicType>();
         RegisterPlainType<UuidType>();
         RegisterPlainType<IPv4Type>();
         RegisterPlainType<IPv6Type>();
@@ -167,7 +173,10 @@ internal static class TypeConverter
         RegisterPlainType<MultiPolygonType>();
 
         // JSON/Object
+        RegisterPlainType<JsonType>();
         RegisterParameterizedType<ObjectType>();
+
+        RegisterParameterizedType<AggregateFunctionType>();
 
         // Mapping fixups
         ReverseMapping.Add(typeof(ClickHouseDecimal), new Decimal128Type());
@@ -177,6 +186,9 @@ internal static class TypeConverter
 #endif
         ReverseMapping[typeof(DateTime)] = new DateTimeType();
         ReverseMapping[typeof(DateTimeOffset)] = new DateTimeType();
+
+        ReverseMapping[typeof(DBNull)] = new NullableType() { UnderlyingType = new NothingType() };
+        ReverseMapping[typeof(JsonObject)] = new JsonType();
     }
 
     private static void RegisterPlainType<T>()
@@ -214,7 +226,7 @@ internal static class TypeConverter
 
         if (typeName.Contains(' '))
         {
-            var parts = typeName.Split(new[] { " " }, 2, StringSplitOptions.RemoveEmptyEntries);
+            var parts = typeName.Split(Separator, 2, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 2)
             {
                 typeName = parts[1].Trim();
@@ -230,9 +242,9 @@ internal static class TypeConverter
             return typeInfo;
         }
 
-        if (ParameterizedTypes.ContainsKey(typeName))
+        if (ParameterizedTypes.TryGetValue(typeName, out var value))
         {
-            return ParameterizedTypes[typeName].Parse(node, (n) => ParseClickHouseType(n, settings), settings);
+            return value.Parse(node, (n) => ParseClickHouseType(n, settings), settings);
         }
 
         throw new ArgumentException("Unknown type: " + node.ToString());
@@ -246,9 +258,9 @@ internal static class TypeConverter
     /// <returns>Corresponding ClickHouse type</returns>
     public static ClickHouseType ToClickHouseType(Type type)
     {
-        if (ReverseMapping.ContainsKey(type))
+        if (ReverseMapping.TryGetValue(type, out var value))
         {
-            return ReverseMapping[type];
+            return value;
         }
 
         if (type.IsArray)
@@ -274,5 +286,72 @@ internal static class TypeConverter
         }
 
         throw new ArgumentOutOfRangeException(nameof(type), "Unknown type: " + type.ToString());
+    }
+
+    // See https://github.com/ClickHouse/ClickHouse/blob/b618fe03bf96e64bea1a1bdec01adc1c00cd61fb/src/DataTypes/DataTypesBinaryEncoding.cpp#L48
+    // https://clickhouse.com/docs/en/sql-reference/data-types/data-types-binary-encoding
+    internal static ClickHouseType FromByteCode(ExtendedBinaryReader reader)
+    {
+        var value = reader.ReadByte();
+        switch (value)
+        {
+            case 0x00: return new NothingType();
+            case 0x01: return new UInt8Type();
+            case 0x02: return new UInt16Type();
+            case 0x03: return new UInt32Type();
+            case 0x04: return new UInt64Type();
+            case 0x05: return new UInt128Type();
+            case 0x06: return new UInt256Type();
+            case 0x07: return new Int8Type();
+            case 0x08: return new Int16Type();
+            case 0x09: return new Int32Type();
+            case 0x0A: return new Int64Type();
+            case 0x0B: return new Int128Type();
+            case 0x0C: return new Int256Type();
+            case 0x0D: return new Float32Type();
+            case 0x0E: return new Float64Type();
+            case 0x0F: return new DateType();
+            case 0x10: return new Date32Type();
+            case 0x11: return new DateTimeType();
+            case 0x12: return new DateTimeType { TimeZone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(reader.ReadString()) };
+            case 0x13: return new DateTime64Type() { Scale = reader.Read7BitEncodedInt() };
+            case 0x14: return new DateTime64Type() { Scale = reader.Read7BitEncodedInt(), TimeZone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(reader.ReadString()) };
+            case 0x15: return new StringType();
+            case 0x16: return new FixedStringType() { Length = reader.Read7BitEncodedInt() };
+            // case 0x17: return new Enum8Type(); // TODO values
+            // case 0x18: return new Enum16Type(); // TODO values
+            // case 0x19: return new Decimal32Type(); // TODO precision and scale
+            // case 0x1A: return new Decimal64Type(); // TODO precision and scale
+            // case 0x1B: return new Decimal128Type(); // TODO precision and scale
+            // case 0x1C: return new Decimal256Type(); // TODO precision and scale
+            case 0x1D: return new UuidType();
+            case 0x1E: return new ArrayType() { UnderlyingType = FromByteCode(reader) };
+            // case 0x1F: return new TupleType();
+            // case 0x20: return new TupleType();
+            // case 0x21: return new UInt64Type();
+            // case 0x22: return new Int64Type();
+            case 0x23: return new NullableType() { UnderlyingType = FromByteCode(reader) };
+            // case 0x24: return new SimpleAggregateFunctionType(); // TODO function
+            // case 0x25: return new AggregateFunctionType(); // TODO function
+            case 0x26: return new LowCardinalityType() { UnderlyingType = FromByteCode(reader) };
+            case 0x27: return new MapType() { UnderlyingTypes = Tuple.Create(FromByteCode(reader), FromByteCode(reader)) };
+            case 0x28: return new IPv4Type();
+            case 0x29: return new IPv6Type();
+            // case 0x2A: return new VariantType(); // TODO nested types
+            case 0x2B: return new DynamicType();
+            // case 0x2C: return new RingType(); // TODO custom type
+            case 0x2D: return new BooleanType();
+            // case 0x2E: return new SimpleAggregateFunctionType(); // TODO function
+            // case 0x2F: return new NestedType(); // TODO nested types
+            case 0x30:
+                var _serializationVersion = reader.ReadByte(); // <uint8_serialization_version>
+                var _maxDynamicPaths = reader.Read7BitEncodedInt(); // <var_int_max_dynamic_paths>
+                var _maxDynamicTypes = reader.ReadInt32(); // <uint8_max_dynamic_types>
+                return new JsonType(); // TODO JSON settings
+            default:
+                break;
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(value), $"Unknown type: {value}");
     }
 }

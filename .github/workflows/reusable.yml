@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       framework:
-        default: net6.0
+        default: net8.0
         required: false
         type: string
       clickhouse-version:
@@ -19,65 +19,48 @@ on:
 jobs:
   build-and-test:
     name: Build & Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
 
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:${{ inputs.clickhouse-version }}
         ports:
           - 8123:8123
-          
+        env:
+          CLICKHOUSE_DB: test
+          CLICKHOUSE_USER: test
+          CLICKHOUSE_PASSWORD: test1234
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    
-    - uses: actions/cache@v4
-      name: Cache NuGet
-      with:
-        path: ~/.nuget/packages
-        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-        restore-keys: |
-          ${{ runner.os }}-nuget-
-      
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: |
-          3.1.x
-          5.x
-          6.x
-          7.x
-          
-    - name: Install GitHubActionsTestLogger
-      run: dotnet add ClickHouse.Client.Tests/ClickHouse.Client.Tests.csproj package GitHubActionsTestLogger --no-restore
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install pycobertura
-      if: ${{ inputs.coverage }}
-      run: pip install pycobertura
+      - uses: actions/cache@v4
+        name: Cache NuGet
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
 
-    - name: Install coverlet
-      if: ${{ inputs.coverage }}
-      run: |
-        dotnet add ClickHouse.Client.Tests/ClickHouse.Client.Tests.csproj package coverlet.collector --no-restore
-        dotnet add ClickHouse.Client.Tests/ClickHouse.Client.Tests.csproj package coverlet.msbuild --no-restore
+      - name: Setup .NET Core
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            3.1.x
+            5.x
+            8.x
 
-    - name: Test with coverage
-      run: dotnet test --framework ${{ inputs.framework }} --configuration Release --verbosity normal --logger GitHubActions  /clp:ErrorsOnly /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:SkipAutoProps=true
-      env:
-        CLICKHOUSE_CONNECTION: Host=localhost;Port=8123
-        CLICKHOUSE_VERSION: ${{ inputs.clickhouse-version }}
-    
-    - name: Rename coverage file
-      if: ${{ inputs.coverage }}
-      run: mv ./ClickHouse.Client.Tests/coverage.${{ inputs.framework }}.cobertura.xml ./ClickHouse.Client/coverage.cobertura.xml
+      - name: Test
+        run: dotnet test ClickHouse.Client.Tests/ClickHouse.Client.Tests.csproj --framework ${{ inputs.framework }} --configuration Release --verbosity normal --logger GitHubActions  /clp:ErrorsOnly /p:CollectCoverage=true /p:CoverletOutputFormat=opencover /p:SkipAutoProps=true
+        env:
+          CLICKHOUSE_CONNECTION: Host=localhost;Port=8123;Username=test;Password=test1234
+          CLICKHOUSE_VERSION: ${{ inputs.clickhouse-version }}
 
-    - name: Upload coverage xml
-      if: ${{ inputs.coverage }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage
-        path: ./ClickHouse.Client/coverage.cobertura.xml
-      
-    - name: Report summary
-      if: ${{ inputs.coverage }}
-      run: pycobertura show ./ClickHouse.Client/coverage.cobertura.xml --format markdown >> $GITHUB_STEP_SUMMARY
+      - uses: codecov/codecov-action@v5
+        with:
+          fail_ci_if_error: true
+          disable_search: true
+          files: ./ClickHouse.Client.Tests/coverage.${{ inputs.framework }}.opencover.xml

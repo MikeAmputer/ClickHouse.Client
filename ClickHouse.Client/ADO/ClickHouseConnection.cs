@@ -37,9 +37,9 @@ public class ClickHouseConnection : DbConnection, IClickHouseConnection, IClonea
     private Version serverVersion;
     private string serverTimezone;
 
-    private string database = "default";
-    private string username;
-    private string password;
+    private string database = ClickHouseEnvironment.Database;
+    private string username = ClickHouseEnvironment.Username;
+    private string password = ClickHouseEnvironment.Password;
     private string session;
     private bool useServerTimezone;
     private bool useCustomDecimals;
@@ -338,7 +338,7 @@ public class ClickHouseConnection : DbConnection, IClickHouseConnection, IClonea
     {
         if (string.IsNullOrWhiteSpace(versionString))
             throw new ArgumentException($"'{nameof(versionString)}' cannot be null or whitespace.", nameof(versionString));
-        var parts = versionString.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries)
+        var parts = versionString.Split(DotSeparator, StringSplitOptions.RemoveEmptyEntries)
             .Select(s => int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i) ? i : 0)
             .ToArray();
         if (parts.Length == 0 || parts[0] == 0)
@@ -355,7 +355,8 @@ public class ClickHouseConnection : DbConnection, IClickHouseConnection, IClonea
         Database = database,
         SessionId = session,
         UseCompression = UseCompression,
-        CustomParameters = customSettings.ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+        ConnectionQueryStringParameters = customSettings
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
         Sql = sql,
     };
 
@@ -383,7 +384,9 @@ public class ClickHouseConnection : DbConnection, IClickHouseConnection, IClonea
                 Database = database,
                 Username = username,
                 Password = password,
+                Protocol = serverUri?.Scheme,
                 Host = serverUri?.Host,
+                Path = serverUri?.AbsolutePath,
                 Port = (ushort)serverUri?.Port,
                 Compression = UseCompression,
                 UseSession = session != null,
@@ -404,7 +407,7 @@ public class ClickHouseConnection : DbConnection, IClickHouseConnection, IClonea
             database = builder.Database;
             username = builder.Username;
             password = builder.Password;
-            serverUri = new UriBuilder(builder.Protocol, builder.Host, builder.Port).Uri;
+            serverUri = new UriBuilder(builder.Protocol, builder.Host, builder.Port, builder.Path).Uri;
             UseCompression = builder.Compression;
             session = builder.UseSession ? builder.SessionId ?? Guid.NewGuid().ToString() : null;
             timeout = builder.Timeout;
@@ -419,6 +422,8 @@ public class ClickHouseConnection : DbConnection, IClickHouseConnection, IClonea
             ResetHttpClientFactory();
         }
     }
+
+    private static readonly char[] DotSeparator = ['.'];
 
     protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) => throw new NotSupportedException();
 

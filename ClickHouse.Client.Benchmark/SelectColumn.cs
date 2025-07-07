@@ -4,8 +4,9 @@ using BenchmarkDotNet.Attributes;
 using ClickHouse.Client.ADO;
 using ClickHouse.Client.Utility;
 
-namespace ClickHouse.Client.Benchmark.Benchmarks;
+namespace ClickHouse.Client.Benchmark;
 
+[MemoryDiagnoser(true)]
 public class SelectColumn
 {
     private readonly ClickHouseConnection connection;
